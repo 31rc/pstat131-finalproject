@@ -1,0 +1,728 @@
+---
+title: "PSTAT 131 Final Project"
+author: "Eric Liu"
+output: 
+  html_document:
+    toc: True
+    toc_float: True
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, message = FALSE, warning = FALSE)
+```
+
+## Introduction
+
+The goal of my final project is to build a machine learning model that is able to predict the annual salary of NBA players based on their game stats and several other variables, such as age, draft number, and other advanced game stats. 
+
+### What is the purpose of this model?
+
+Unlike some professional sports leagues, there is a special rule of the annual salary of all players in each team. For all 30 teams in NBA, there is salary cap that limits the sum of annual salaries of all players signed by each team. For example, the current salary cap for the 2022-23 season is 123.655 million, so the total salary of all players signed by each NBA team cannot exceed this amount. However, the salary cap for NBA is soft. It means that each team can pay more salaries than the amount of the salary cap, but it has to pay certain amount of luxury tax, and tax rates vary based on the exceeding amount. Therefore, since each team needs to hire 12-15 players each season, it is vital to allocate their budgets wisely, and this model can provide more insight for team management during salary negotiations with players and allocate budget more reasonably.
+
+### Data source
+
+The data for this project is obtained from Kaggle(https://www.kaggle.com/datasets/aishjun/nba-salaries-prediction-in-20172018-season), and it is provided by a user name AI Shaojun. The data contains the annual salaries and other related variables of all NBA players during the 2017-18 season. The reason why I only chose the data of one season is that there players usually sign a several-year contract, so the annual salaries of most players are relatively stable in a 3-4 year period. 
+
+### Load packages and set seed
+
+```{r package}
+library(tidyverse) # for EDA, model fitting, etc
+library(tidymodels)
+library(ggplot2) # for visualization 
+library(corrplot) # for correlation and correlation plot
+library(janitor)     # for cleaning out our data
+library(glmnet) # for ridge and lasso regression
+library(xgboost) # for boosted tree
+library(ranger) # for random forest
+library(randomForest)
+library(rpart.plot)  # for visualizing trees
+library(kknn)
+library(vip)         # for variable importance 
+
+#library(vembedr)     # for embedding links
+
+library("yardstick") # for measuring certain metrics
+tidymodels_prefer()
+
+# set seed
+set.seed(0)
+```
+
+## Load and clean the data
+
+First of all, we will load and clean the data. We will also drop unimportant variables, check whether there are misssing values in each columns, and do any necessary change to the data to make it easer to view and use.
+
+### Load the data
+
+```{r data}
+# load data
+nba_salary <- read_csv("data/2017-18_NBA_salary.csv")
+head(nba_salary)
+```
+
+### Tidy the data
+
+Although the data we obtained is tidy, we still have several steps to do to make it easier to manipulate. First, we clean the names of the dataset, and then check its dimension.
+
+```{r}
+# clean names
+nba_salary <- clean_names(nba_salary)
+head(nba_salary)
+
+# check dimension
+dim(nba_salary)
+```
+
+We can see that there are 485 observations and 28 variables. We obviously do not need all variables, so we need to drop unrelated variables and unimportant variables. Since the goal of the project is to predict salary, we can first drop unrelated variables including `nba_country` and `tm`(team). Then, based on my familiarity of basketball and NBA games, we can drop some unimportant variables. First, we can drop `g`(game played) and `mp`(minutes played) because `usg`(usage rate) is a better metric of player's involvement calculated using `g`(game played) and `mp`(minutes played). Then, we can drop `x3p_ar`(3-point attempt rate) and `f_tr`(free throw rate) because `ts_percent`(true shooting percent) is a better metric of player's shooting score ability calculated using `x3p_ar`(3-point attempt rate) and `f_tr`(free throw rate). Lastly, we can drop `ws`(win shares) because `ws_48`(win shares per 48 minutes) is a better metric since it measures player's performance per game and it's obtained by dividing `ws` 48 so we don't need both.
+
+```{r}
+nba_salary <- nba_salary %>% select(-nba_country, -tm, -g, -mp, -x3p_ar, -f_tr, -ws)
+```
+
+Here are the descriptions of the key variables we will use as predictors, salary as the outcome, and players' names for the convenience when analyzing:
+
+* `player`: the name of the player
+* `salary`: the annual salary of the player
+* `nba_draft_number`: at which pick the player was drafted (1-62)
+* `age`: the age of the player
+* `per`: player efficiency rating (player's positive accomplishments per minute)
+* `ts_percent`: true shooting percentage (player's shooting efficiency per game)
+* `orb_percent`: offensive rebound percentage (estimate of the percentage of available offensive rebounds a player grabbed)
+* `drb_percent`: defensive rebound percentage (estimate of the percentage of available defensive rebounds a player grabbed)
+* `trb_percent`: total rebound percentage (estimate of the percentage of available total rebounds a player grabbed)
+* `ast_percent`: assist percentage (estimate of the percentage of teammate field goals a player assisted)
+* `stl_percent`: steal percentage (estimate of the percentage of steals a player performs)
+* `blk_percent`: block percentage (estimate of the percentage of blocks a player performs)
+* `tov_percent`: turnover percentage (estimate of the percentage of turnovers a player performs)
+* `usg_percent`: usage rate (estimate of the percentage a player was involved in the game)
+* `ows_percent`: offensive win shares (credit to a player based on his performance in offense)
+* `dws_percent`: defensive win shares (credit to a player based on his performance in defense)
+* `ws_48`: win shares per 48 minutes (player's credit to team success per 48 minutes, obtained from WS divides 48)
+* `obpm`: offensive box plus-minus (player's offensive performance relative to the NBA average)
+* `dbpm`: defensive box plus-minus (player's defensive performance relative to the NBA average)
+* `bpm`: box plus-minus (player's performance relative to the NBA average)
+* `vorp`: value over replacement player (estimate of the points per 100 TEAM possessions that a player contributed above a replacement-level (-2.0) player)
+
+A complete codebook is included in the **data** subfolder.
+
+Then, we need to check whether there are missing values
+
+```{r}
+nba_salary %>% map(~sum(is.na(.)))
+```
+
+Fortunately, we only 4 missing values in total, so we filter out observations with missing values. Then, We can have a check after dropping observations with missing values. 
+
+```{r}
+# drop observations if ts_percent or tov_percent is missing
+nba_salary <- nba_salary %>% drop_na(ts_percent)
+nba_salary <- nba_salary %>% drop_na(tov_percent)
+
+# check dimension
+dim(nba_salary)
+```
+
+Now, we have 483 observations and 21 variables in our data set.
+
+To make salary easier to read, we can convert the salary column to be in millions and round numbers to have 3 digits after decimal point.
+
+```{r}
+nba_salary <- nba_salary %>%
+  mutate(salary = round(salary / 1000000, digits = 3))
+```
+
+## Exploratory Data Analysis (EDA)
+
+Now, since our dataset is tidy enough to use, we can continue to explore the feature of variables and correlation between variables.
+
+### Salary
+
+First, we can take a look at the distribution of the salary.
+
+```{r}
+# histogram of salary
+nba_salary %>% 
+  ggplot() + 
+  geom_histogram(mapping = aes(salary), binwidth = 1.5) + 
+  labs(x = "annual salary in million", title = "Distribution of Salary")
+```
+
+Most players have an annual salary around 1-2 million, and there are extremely small amount players have relatively high salaries. Although it is a little surprising for me, it makes sense because most players are bench players who are paid on average, and only starter players and all-star level players are paid higher than the average. And only super-star players which are very rare, like Lebron James and Stephen Curry, are paid extremely high.
+
+### Correlation
+
+Then, let us have a look at the correlation map between variables.
+
+```{r}
+# correlation map between all continuous variables
+nba_salary %>% 
+  select(where(is.numeric)) %>% 
+  cor() %>% 
+  corrplot(method = "circle", type = "lower")
+```
+
+We can see that salary is negatively correlated with draft number and turnover rate, and it is positively correlated with all other variables. This result meets my expectation. If a player has lower draft number, he was drafted by the team earlier, so he was expected to have better performance and the team is willing to spend more money to attract and cultivate the player. Turnover rate(`ts_percent`) is a negative metric of player's performance, so it also should be negatively correlated with the salary, but the correlation is very weak. Other variables are positive measurements of player's performance, so it indicates that players with better performance tend to have higher salaries. If we take a close look at the extent of the correlation, we can also find that offensive win shares(`ows`), defensive win shares(`dws`), and value over replacement players(`vorp`) have relatively high correlation with salary. I guess it is because the team is more willing to pay more to players who can make more contribution and have better performance than the average. \
+However, there are also some results that are surprising for me. First, age is positively correlated salary. Before seeing the plot, I assume that age should be negatively correlated, because older player tend to have lower physical performance, which limits their game performance, but it's the opposite. Since age has very low correlations with other variables, I guess it is because older players can contribute more using their experience, so teams are willing to hire them with high salaries. \
+In addition, there are strong correlations between variables. For example, there are strong correlations between player efficiency rating(`per`) and true shooting rate(`ts_percent`), win shares(`ws_48`), and box plus-minus(`bpm`). Therefore, we need to create interactions between those variables when creating the recipe.
+
+### Draft Number
+
+The following is a box plot of salary grouped by 
+
+```{r}
+# box plot of salary grouped by draft number
+nba_salary %>%
+  ggplot() + 
+  geom_boxplot(mapping = aes(x=salary, y=factor(nba_draft_number))) +
+  labs(y = "draft number")
+```
+
+Although there are a few outliers, we can confirm the positive correlation between salary and draft number. An interesting of observation is that, although some players were drafted with later picks, they can still obtain high-paid contracts. For example, there several players who were drafted at 62th picks, but they are paid over 10 million a year.
+
+### Age
+
+The following is a box plot of salary grouped by age, so we can further explore the relationship between salary and age.
+
+```{r}
+# box plot of salary grouped by age
+nba_salary %>%
+  ggplot() + 
+  geom_boxplot(mapping = aes(x=salary, y=factor(age)))
+```
+
+On average, players from 27 to 32 have over-average annual salaries, and player younger than or older than this range tend to have lower salaries. For each age, there are outliers, and I guess those outliers are super-star level players of each age group. Although we observed that salary is positively correlated with age from the correlation map, there is a decrease in salary after 36. It is because there are fewer players over 36, so we can say that the positive correlation between salary and age exists for most players.
+
+### Positive Performance Metric
+
+Now, we take a closer look at the relationship between salary and positive performance metrics. Since there are 15 positive performance metrics, I select `per`, `trb_percent`, `ast_percent`, `stl_percent`, `blk_percent`, and `vorp` to visualize, because they have a relatively low correlation with each other. 
+
+```{r, echo=FALSE}
+# scatter plots of salary against player efficiency rating
+nba_salary %>% 
+  ggplot(aes(per, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Player Efficiency Rating", x = "player efficiency rating"
+  )
+
+# scatter plots of salary against total rebound percent
+nba_salary %>% 
+  ggplot(aes(trb_percent, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Total Rebound Percent", x = "total rebound percent"
+  )
+
+# scatter plots of salary against assist percent
+nba_salary %>% 
+  ggplot(aes(ast_percent, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Assist Percent", x = "assist percent"
+  )
+
+# scatter plots of salary against steal percent
+nba_salary %>% 
+  ggplot(aes(stl_percent, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Steal Percent", x = "steal percent"
+  )
+
+# scatter plots of salary against block percent
+nba_salary %>% 
+  ggplot(aes(blk_percent, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Block Percent", x = "block percent"
+  )
+
+# scatter plots of salary against value over replacement players
+nba_salary %>% 
+  ggplot(aes(vorp, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Value Over Replacement Players", x = "value over replacement players"
+  )
+```
+
+We can observe a clear positive correlation between salary and total rebound percent, assist percent, and value over replacement players. For player efficiency rating, steal percent, and block percent, there are outliers that affect the trend lines. However, if we ignore those outliers and focus on the major data points, we can see a very weak positive correlation.
+
+### Negative Performance Metric
+
+Then, here is a scatter plot of salary against turnover rate which is the only negative performance metric.
+
+```{r}
+# scatter plots of salary against turnover rate
+nba_salary %>% 
+  ggplot(aes(tov_percent, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Turnover Rate", x = "tunrover rate"
+  )
+```
+
+Most players have turnover rate between 5 and 20. In this range, the correlation between salary and turnover rate is very weak. For players who have turn over rate higher than 20, we can see that those players have lower salaries. This is corresponding to the result we observed from the correlation map. There is a extremely weak correlation between salary and turnover rate. For players who have extremely low turnover rate, I think its because they also have extremely less time on the court, so they have turnover rate nearly 0 and very low salaries.
+
+### Usage Rate
+
+Lastly, let us take a look at the relationship between salary and player's usage rate.
+
+```{r}
+# scatter plots of salary against usage rate
+nba_salary %>% 
+  ggplot(aes(usg_percent, salary)) +
+  geom_point() +
+  geom_smooth(method = "loess") +
+  labs(
+    title = "Salary vs. Usage Rate", x = "usage rate"
+  )
+```
+
+There is a weak positive correlation between salary and usage rate. We can notice that there are a few outliers on the right side. Several players have relatively high usage rate but very low salaries. I think it's because the usage rate is the estimate of how much the player is involved when on the court. Some bench players are regularly on courts and have enough scoring attempts, but it does not necessarily mean that they make positive contribution when on the court. It only indicates they are sufficiently involved in the game.
+
+## Set Up Models
+
+Since we already explored the correlation between variables and had a general idea on how each predictor influences the outcome, we will move forward to set up our models. We will first split our data, then further split the training data into validation sets, and lastly create the recipe for models.
+
+### Training/Testing Data Split
+
+First we split the data into the training set and the testing set. Since there are 483 observations in total, to make training set have enough observations, I chose to split the data into 80/20. In addition, to make each dataset represent the whole population appropriately, we stratified the split on the outcome variable `salary`.
+
+```{r}
+# split the data
+nba_split <- initial_split(nba_salary, prop = 0.8, strata = salary)
+nba_train <- training(nba_split)
+nba_test <- testing(nba_split)
+
+# verify the number of observations
+dim(nba_train)
+dim(nba_test)
+```
+
+After splitting the data into 80/20, we have 384 observations in the training set and 99 observations in the testing set.
+
+### K-Fold Cross Validation
+
+Next, we do the k-fold cross validation. To make each fold has enough observations, I chose k=5. Therefore, we randomly divide the training set into 5 folds of data with the equal size. Then, we treat one different group as the validation set each time. Repeating the process 5 times, we can obtain 5 estimates of the test error.
+By using k-fold cross-validation, we can have an estimate of the test error with far less bias. In addition, to make each fold more representative of the population, we also stratified on the outcome variable `salary`.
+
+```{r}
+# 5-fold cross validation
+nba_folds <- vfold_cv(nba_train, v = 5, strata = salary)
+nba_folds
+```
+
+### Create Recipe
+
+Lastly, before fitting models, we create the recipe predicting the outcome variable `salary`. We include all variables other than `salary` and `player` in the dataset as predictors. Since all predictors are continuous, we do need to dummy code any predictor. Then, we include interactions between:
+
+* player efficiency rating and true shooting percentage
+* player efficiency rating and win shares per 48 minutes
+* player efficiency rating and offensive box plus-minus
+* player efficiency rating and box plus_minus
+* true shooting percentage and win shares per 48 minutes
+* true shooting percentage and offensive box plus-minus
+* true shooting percentage and box plus_minus
+* total rebound percentage and offensive rebound percentage
+* total rebound percentage and defensive rebound percentage
+* box plus-minus and win shares per 48 minutes
+* box plus-minus and offensive box plus-minus 
+* value over replacement players and offensive win shares
+* value over replacement players and defensive win shares
+
+Lastly, we center and scale all predictors.
+
+```{r}
+# create recipe
+nba_recipe <- recipe(salary ~ nba_draft_number + age + per + ts_percent + orb_percent + drb_percent + trb_percent + ast_percent + stl_percent + blk_percent + tov_percent + usg_percent + ows + dws + ws_48 + obpm + dbpm + bpm + vorp, data = nba_train) %>%
+  step_interact(terms = ~ per:ts_percent) %>% # create interactions between variables
+  step_interact(terms = ~ per:ws_48) %>%
+  step_interact(terms = ~ per:obpm) %>%
+  step_interact(terms = ~ per:bpm) %>%
+  step_interact(terms = ~ ts_percent:ws_48) %>%
+  step_interact(terms = ~ ts_percent:obpm) %>%
+  step_interact(terms = ~ ts_percent:bpm) %>%
+  step_interact(terms = ~ trb_percent:orb_percent) %>%
+  step_interact(terms = ~ trb_percent:drb_percent) %>%
+  step_interact(terms = ~ bpm:ws_48) %>%
+  step_interact(terms = ~ bpm:obpm) %>%
+  step_interact(terms = ~ vorp:ows) %>%
+  step_interact(terms = ~ vorp:dws) %>%
+  step_center(all_predictors()) %>% # center and scale all predictors
+  step_scale(all_predictors())
+```
+
+## Build Models
+
+I will try to fit several different models including:
+
+* ridge regression
+* lasso regression
+* boosted tree
+* random forest
+* k nearest neighbors (KNN)
+
+To fit each model, I will: \
+1. specify model type, engine, and mode \
+2. set up the workflow by adding model and recipe \
+3. set the tuning grid and tune certain parameters \
+4. compare the performance of models with different parameters and select the best performing model on the folds of each type \
+5. compare the best performing models of each type, and select the model with best performance overall \
+6. finalize the model
+
+### Ridge Regression
+
+We will fit a ridge regression model using **glmnet** engine. We specify `mixture = 0` to specify a ridge regression model and tune the parameter `penalty`.
+
+```{r}
+# ridge regression using glmnet engine, tune penalty
+ridge <- linear_reg(penalty = tune(), mixture = 0) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+# create workflow by adding recipe and model
+ridge_workflow <- workflow() %>% 
+  add_recipe(nba_recipe) %>% 
+  add_model(ridge)
+
+# create tuning grid for penalty
+ridge_penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+# fit models to folds
+ridge_res <- tune_grid(
+  ridge_workflow,
+  resamples = nba_folds, 
+  grid = ridge_penalty_grid
+)
+```
+
+The fitting process takes some time, so we save the result:
+
+```{r, eval=FALSE}
+save(ridge_res, ridge_workflow, file = "model/ridge.rda")
+```
+
+Assess the performance and select the best `penalty`:
+
+```{r}
+# load the training result
+load("model/ridge.rda")
+
+# plot the result
+autoplot(ridge_res)
+
+# show the best performing model
+show_best(ridge_res, metric = "rmse")
+show_best(ridge_res, metric = "rsq")
+```
+
+The best performing model of ridge regression is the model with `penalty`=5.18. It has the lowest `rmse` 5.57 and highest `rsq` 0.43.
+
+### Lasso Regression
+
+We will fit a ridge regression model using **glmnet** engine. We specify `mixture = 1` to specify a lasso regression model and tune the parameter `penalty`.
+
+```{r}
+# lasso regression using glmnet engine, tune penalty
+lasso <- linear_reg(penalty = tune(), mixture = 1) %>% 
+  set_mode("regression") %>% 
+  set_engine("glmnet")
+
+# create workflow by adding recipe and model
+lasso_workflow <- workflow() %>% 
+  add_recipe(nba_recipe) %>% 
+  add_model(lasso)
+
+# create tuning grid for penalty
+lasso_penalty_grid <- grid_regular(penalty(range = c(-5, 5)), levels = 50)
+
+# fit models to folds
+lasso_res <- tune_grid(
+  lasso_workflow,
+  resamples = nba_folds, 
+  grid = lasso_penalty_grid
+)
+```
+
+The fitting process takes some time, so we save the result:
+
+```{r, eval=FALSE}
+save(lasso_res, lasso_workflow, file = "model/lasso.rda")
+```
+
+Assess the performance and select the best `penalty`:
+
+```{r}
+# load the training result
+load("model/lasso.rda")
+
+# plot the result
+autoplot(lasso_res)
+
+# show the best performing model
+show_best(lasso_res, metric = "rmse")
+show_best(lasso_res, metric = "rsq")
+```
+
+The best performing model of lasso regression is the model with `penalty`=0.31. It has the lowest `rmse` 5.52 and highest `rsq` 0.43, which is sligtly better than the ridge regression.
+
+### Boosted Tree
+
+We will fit a boosted tree model and tune `trees`.
+
+```{r}
+# boosted tree model
+bt <- boost_tree(mode = "regression", trees = tune()) %>%
+  set_engine("xgboost")
+
+# create workflow by adding recipe and model
+bt_workflow <- workflow() %>%
+  add_recipe(nba_recipe) %>%
+  add_model(bt)
+
+# create tuning grid
+bt_grid <- grid_regular(trees(range = c(10, 2000)), levels = 10)
+
+# fit models to folds
+bt_res <- tune_grid(
+  bt_workflow, 
+  resamples = nba_folds, 
+  grid = bt_grid
+)
+```
+
+The fitting process takes some time, so we save the result:
+
+```{r, eval=FALSE}
+save(bt_res, bt_workflow, file = "model/bt.rda")
+```
+
+Assess the performance and select the best `penalty`:
+
+```{r}
+# load the training result
+load("model/bt.rda")
+
+# plot the result
+autoplot(bt_res)
+
+# show the best performing model
+show_best(bt_res, metric = "rmse")
+show_best(bt_res, metric = "rsq")
+```
+
+The best performing model of boosted tree is the model with `trees`=10. It has the highest `rmse` 5.63 and lowest `rsq` 0.42. It has the highest `rmse` and lowest `rsq` so far, so it has the worst performance so far.
+
+### Random Forest
+
+We will fit a random forest model and tune parameters `mtry`, `trees`, and `min_n`. Since we have 19 predictors, `mtry` should be from 1 to 19.
+
+```{r, eval=FALSE}
+# random forest model
+rf <- rand_forest(mtry = tune(), trees = tune(), min_n = tune()) %>%
+  set_engine("ranger", importance = "impurity") %>%
+  set_mode("regression")
+
+# create workflow by adding recipe and model
+rf_workflow <- workflow() %>%
+  add_recipe(nba_recipe) %>%
+  add_model(rf)
+
+# create tuning grid
+rf_grid <- grid_regular(mtry(range = c(1, 19)), trees(range = c(1, 2000)), min_n(range = c(1, 30)), levels = 5)
+
+# fit models to folds
+rf_res <- tune_grid(
+  rf_workflow, 
+  resamples = nba_folds, 
+  grid = rf_grid
+)
+```
+
+The fitting process takes some time, so we save the result:
+
+```{r, eval=FALSE}
+save(rf_res, rf_workflow, file = "model/rf.rda")
+```
+
+Assess the performance and select the best parameters:
+
+```{r}
+# load the training result
+load("model/rf.rda")
+
+# plot the result
+autoplot(rf_res)
+
+# show the best performing model
+show_best(rf_res, metric = "rmse")
+show_best(rf_res, metric = "rsq")
+```
+
+The best performing model of random forest is the model with `mtry`=19, `trees`=500, and `min_n`=1. It has the lowest `rmse` 5.22 and highest `rsq` 0.50, so it has the lowest `rmse` and highest `rsq` so far. Therefore, it is the best performing model so far. 
+
+### K Nearest Neighbors (KNN)
+
+We will fit a KNN model and tune `neighbors`.
+
+```{r}
+# KNN model
+knn <- nearest_neighbor(mode = "regression", neighbors = tune()) %>% 
+  set_engine("kknn")
+
+# create workflow by adding recipe and model
+knn_workflow <- workflow() %>% 
+  add_recipe(nba_recipe) %>%
+  add_model(knn)
+
+# create tuning grid
+knn_grid <- grid_regular(neighbors(range = c(1, 10)), levels = 5)
+
+# fit models to folds
+knn_res <- tune_grid(
+  knn_workflow, 
+  resamples = nba_folds, 
+  grid = knn_grid
+)
+```
+
+The fitting process takes some time, so we save the result:
+
+```{r, eval=FALSE}
+save(knn_res, knn_workflow, file = "model/knn.rda")
+```
+
+Assess the performance and select the best `penalty`:
+
+```{r}
+# load the training result
+load("model/knn.rda")
+
+# plot the result
+autoplot(knn_res)
+
+# show the best performing model
+show_best(knn_res, metric = "rmse")
+show_best(knn_res, metric = "rsq")
+```
+
+The best performing model of KNN is the model with `neighbors`=10. It has the highest `rmse` 5.96 and lowest `rsq` 0.34. It has the highest `rmse` and lowest `rsq`, so it has the worst performance in all models.
+
+### The Best Model
+
+After comparing the best performing model of each type, we select the random forest model with `mtry`=19, `trees`=500, and `min_n`=1 as the our final model, because it has the lowest `rmse`=5.22 and highest `rsq`=0.50. Therefore, it is the best performing model of all models. Then, let us finalize the model and workflow.
+
+```{r}
+# finalize the model
+
+# choose the best parameters of random forest model
+best_rf <- select_best(rf_res)
+
+# finalize workflow
+rf_final <- finalize_workflow(rf_workflow, best_rf)
+```
+
+## Final Model
+
+Since we already selected the model with the best performance after fitting all models and also finalized the model and workflow, we now fit the best model to the whole training set and evaluate the performance of our final model on the testing set.
+
+### Fit to the Training Set
+
+Fit the final model to the whole training set:
+
+```{r, eval=FALSE}
+# fit the final model to the training set:
+final_fit <- fit(rf_final, data = nba_train)
+```
+
+Save the result:
+
+```{r, eval=FALSE}
+save(final_fit, file = "model/final_fit.rda")
+```
+
+### Performance on the Testing Set
+
+```{r}
+# load the finial fit
+load("model/final_fit.rda")
+
+# rmse on the testing set
+augment(final_fit, new_data = nba_test) %>%
+  rmse(truth = salary, estimate = .pred)
+
+# rsq on the testing set
+augment(final_fit, new_data = nba_test) %>%
+  rsq(truth = salary, estimate = .pred)
+
+# plot of predictions against actual values
+augment(final_fit, new_data = nba_test) %>%
+  ggplot(aes(salary, .pred)) +
+  geom_abline() +
+  geom_point(alpha = 0.8) +
+  labs(title = "Predictions vs. Actual Values", x = "actual values", y = "predictions")
+```
+
+Finally, our model has `rmse`=4.86 and `rsq`=0.65 on the testing set, which is even better than its performance fitting to the folds. I guess it is because the model performance improved after trained to a larger dataset. From the plot, we can see that the trend of the predictions produced by our model is the approximate same as the trend of actual values. However, since the points on the right side are farther away from the actual values, its performance is very low when it comes to relatively higher salaries.
+
+### Variable Importance
+
+Now, we can take a look at the importance of predictors in predicting the salary.
+
+```{r}
+final_fit %>%
+  extract_fit_engine() %>%
+  vip()
+```
+
+It is surprising for me that `age` is the most important predictor. Positive performance metrics are important as I expected, and draft number also plays an important role in predicting salary. Usage rate is not as that important as I expected.
+
+### Check Several Players' Predictions
+
+In order to have a more direct view of the performance of the model, I will choose 3 NBA players who are 3 different levels.
+
+#### LeBron James
+
+The first player I chose is LeBron James, a super-star level small forward of Cleveland Cavaliers during the season 2017-18.
+
+```{r}
+prediction <- augment(final_fit, new_data = nba_test)
+prediction[prediction$player == "LeBron James", c("salary", ".pred")]
+```
+
+We can see that there is huge difference between the prediction and the actual value. I guess it is because super-star level players are a relatively small part of the whole NBA player population, and their salaries are relatively higher than average NBA players, so it is hard for our model to give a close prediction.
+
+#### Khris Middleton
+
+The second player I chose is Khris Middleton, a starter level shooting guard of Milwaukee Bucks during the season 2017-18.
+
+```{r}
+prediction[prediction$player == "Khris Middleton", c("salary", ".pred")]
+```
+
+We can see that the predition for Khris Middleton is much more close than the prediction for LeBron James. I guess it is because Khris Middleton is relatively close to the average NBA players compared to LeBron James.
+
+#### Johnny O'Bryant
+
+The third player I chose is Johnny O'Bryant, a rotation level power forward of Charlotte Hornets during the season 2017-18.
+
+```{r}
+prediction[prediction$player == "Johnny O'Bryant", c("salary", ".pred")]
+```
+
+We can see that the prediction for Johnny O'Bryant is also much more accurate than the prediction for LeBron James, which corresponds to the plot showing that players with lower salaries have relatively more accurate prediction.
+
+## Conclusion
+
+Although the result produced by the final model is still not accurate enough, I am surprised by its performance. It's because predicting NBA players' salaries is very hard. We need to consider players' game performance, physical health, and even some human factors which are difficult to quantify. Before fitting all models, I expect random forest tends to have the best performance, because it is complex and flexible. However, it is very surprising that boosted tree has the worst performance. I guess it is because my dataset is still not large enough to train a model on such complex problem. 
+
+During the analysis of the result, I realized that this is indeed a difficult problem. I always assumed that the salary of player is mostly correlated with his game performance, but it turns out that age plays the most important role. In future, I will perfect my this project from two directions. First, I will try to use a more complex machine learning model, such as neutral network. Second, I will try to find more data for salary prediction. For example, I plan to include the data of multiple seasons and also consider the influence of other potential variables.

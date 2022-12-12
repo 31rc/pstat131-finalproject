@@ -1,0 +1,30 @@
+Name / Data Type / Measurement Unit / Description
+-------------------------------------------------
+Player / nominal / -- / the name of the player
+Salary / continuous / dollar / the annual salary of the player
+NBA_Country / nominal / -- / the country where the player comes from
+NBA_Draft / continuous / integer / at which pick the player was drafted (1-62)
+Age / continuous / year / the age of the player
+Tm / nominal / -- / the team of the player
+G / continuous / integer / the number of games the player played during the whole season (1-82)
+MP / continuous / minutes / the number of minutes the player played during the whole season
+PER / continuous / tenth digit / player efficiency rating (player's positive accomplishments per minute)
+TS% / continuous / thousandth digit / true shooting percentage (player's shooting efficiency per game)
+3PAr / continuous / thousandth digit / 3 point attempt rate (percentage of shooting attempt from 3-point range)
+FTr / continuous / thousandth digit / free throw attempt rate (percentage of shooting attempt from free-throw line)
+ORB% / continuous / tenth digit / offensive rebound percentage (estimate of the percentage of available offensive rebounds a player grabbed)
+DRB% / continuous / tenth digit / defensive rebound percentage (estimate of the percentage of available defensive rebounds a player grabbed)
+TRB% / continuous / tenth digit / total rebound percentage (estimate of the percentage of available total rebounds a player grabbed)
+AST% / continuous / tenth digit / assist percentage (estimate of the percentage of teammate field goals a player assisted)
+STL% / continuous / tenth digit / steal percentage (estimate of the percentage of steals a player performs)
+BLK% / continuous / tenth digit / block percentage (estimate of the percentage of blocks a player performs)
+TOV% / continuous / tenth digit / turnover percentage (estimate of the percentage of turnovers a player performs)
+USG% / continuous / tenth digit / usage rate (estimate of the percentage a player was involved in the game)
+OWS / continuous / tenth digit / offensive win shares (credit to a player based on his performance in offense)
+DWS / continuous / tenth digit / defensive win shares (credit to a player based on his performance in defense)
+WS / continuous / tenth digit / win shares (player's credit to team success)
+WS/48 / continuous / thousandth digit / win shares per 48 minutes (player's credit to team success per 48 minutes, obtained from WS divides 48)
+OBPM / continuous / tenth digit / offensive box plus-minus (player's offensive performance relative to the NBA average)
+DBPM / continuous / tenth digit / defensive box plus-minus (player's defensive performance relative to the NBA average)
+BPM / continuous / tenth digit / box plus-minus (player's performance relative to the NBA average)
+VORP / continuous / tenth digit / value over replacement player (estimate of the points per 100 TEAM possessions that a player contributed above a replacement-level (-2.0) player)
